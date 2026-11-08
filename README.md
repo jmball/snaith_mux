@@ -50,7 +50,11 @@ receiving the complete response then gets a fresh, separate timeout of the same
 length. Each socket read uses the remaining response budget, so fragmented or
 slowly trickling responses cannot extend it. Connection establishment and the
 complete welcome response also receive separate allowances. Reconnecting uses
-the timeout passed to that connect call (or the default 5 seconds). EOF, timeout,
+the timeout passed to that connect call (or the default 5 seconds). While
+connected, read or assign `mux.timeout` to inspect or change the setting in
+seconds. Assignments must be positive and finite (booleans are rejected), send
+no commands, and apply to subsequent I/O. Getting or setting the property while
+disconnected raises RuntimeError. EOF, timeout,
 non-ASCII responses, oversize responses, and firmware ERROR responses raise exceptions. Any command
 I/O/response failure closes the session and forgets commanded state. No retry
 occurs: an acknowledgement can be lost after a command took effect. Value errors

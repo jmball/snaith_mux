@@ -16,6 +16,11 @@ DEFAULT_TIMEOUT = 5.0
 PIXEL_MASKS = MappingProxyType({0: 0, **{p: (1 << (p + 7)) | 3 for p in range(1, 9)}})
 
 
+def _validate_timeout(value: float) -> None:
+    if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+        raise ValueError("timeout must be positive and finite")
+
+
 class ProtocolError(RuntimeError):
     """The controller response is incomplete or violates the protocol."""
 
@@ -46,6 +51,32 @@ class SnaithMux:
     def connected(self) -> bool:
         """Whether a local session is open; this is not a peer liveness probe."""
         return self._socket is not None
+
+    @property
+    def timeout(self) -> float:
+        """Communications timeout in seconds; requires a connection.
+
+        Returns
+        -------
+        float
+            Separate allowance for each send and complete-response read.
+        """
+        self._require_socket()
+        return self._timeout
+
+    @timeout.setter
+    def timeout(self, value: float) -> None:
+        """Set the timeout for subsequent I/O without communicating.
+
+        Parameters
+        ----------
+        value : float
+            Positive finite timeout in seconds. Booleans are rejected.
+            Requires a connection; invalid values preserve the current timeout.
+        """
+        self._require_socket()
+        _validate_timeout(value)
+        self._timeout = value
 
     @property
     def welcome_message(self) -> str | None:
@@ -129,8 +160,7 @@ class SnaithMux:
             raise ValueError("resource_name must be a nonempty hostname or IP address")
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("port must be an integer in 1..65535")
-        if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError("timeout must be positive and finite")
+        _validate_timeout(timeout)
         self._timeout = timeout
         self._socket = socket.create_connection((resource_name, port), self._timeout)
         try:

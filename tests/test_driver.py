@@ -361,3 +361,48 @@ def test_reconnect_uses_new_timeout_and_reset_uses_comms_timeout():
             driver.reset()
             setting.assert_called_once_with(timeout)
         assert fake.closed
+
+
+def test_timeout_property_requires_connection():
+    driver = SnaithMux()
+    for disconnected in (True, False):
+        if not disconnected:
+            fake = FakeSocket()
+            with patch("socket.create_connection", return_value=fake):
+                driver.connect("fake")
+            driver.disconnect()
+        with pytest.raises(RuntimeError, match="Not connected"):
+            _ = driver.timeout
+        with pytest.raises(RuntimeError, match="Not connected"):
+            driver.timeout = 2.0
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan"), True])
+def test_invalid_timeout_assignment_preserves_setting_and_state(value):
+    fake = FakeSocket()
+    driver = connect(fake)
+    driver.select_pixel("A", 1)
+    with pytest.raises(ValueError, match="timeout"):
+        driver.timeout = value
+    assert driver.timeout == 5.0
+    assert driver.connected and driver.commanded_selection == ("A", 259)
+    assert fake.sent == [b"sA00259\r\n"]
+
+
+def test_timeout_property_applies_to_subsequent_send_receive_and_reset():
+    fake = FakeSocket()
+    driver = SnaithMux()
+    with patch("socket.create_connection", return_value=fake):
+        driver.connect("fake", timeout=1.0)
+    assert driver.timeout == 1.0
+    with patch.object(fake, "settimeout") as setting:
+        driver.timeout = 2.5
+        assert driver.timeout == 2.5
+        setting.assert_not_called()
+        assert fake.sent == []
+        with patch("snaith_mux.driver.time.monotonic", return_value=10.0):
+            driver.deselect_all()
+        assert [call.args[0] for call in setting.call_args_list] == [2.5] * 5
+        setting.reset_mock()
+        driver.reset()
+        setting.assert_called_once_with(2.5)
