@@ -1,1 +1,1 @@
-include examples/fake_controller.py
+include examples/select_pixel.py

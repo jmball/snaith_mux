@@ -22,10 +22,39 @@ with SnaithMux() as mux:
 # TCP connection closed
 ```
 
-For a hardware-free example run `uv run python examples/fake_controller.py`.
-It starts a local TCP peer and selects, deselects, and disconnects. It does not
-simulate physical relays. If the VM blocks loopback TCP, the fake-socket tests
-still require no network. Never substitute a real controller in the tests.
+The example uses the actual instrument driver and changes real relay settings.
+Run it only when ready to connect to your controller:
+
+```sh
+uv run python examples/select_pixel.py YOUR-CONTROLLER-HOST --slot A --pixel 2
+```
+
+It selects the requested pixel, deselects the slot and all muxes, then closes
+TCP. It attempts all-off on exit while the session remains connected. If a
+communication failure closes the session, relay state is unknown and cleanup
+cannot be confirmed. No live hardware is contacted by the automated tests;
+`--help` displays usage without connecting.
+
+For hardware-free application development, use the virtual driver instead:
+
+```python
+from virtual_snaith_mux import SnaithMux
+
+with SnaithMux(slots=("A", "B")) as mux:
+    mux.connect("virtual", timeout=5)
+    mux.select_pixel("B", 2)
+    print(mux.commanded_selection)  # ('B', 515)
+    mux.deselect_all()
+```
+
+The virtual package follows the real driver's public API and validation. It
+reports virtual firmware text and the configured slots (default A). Operations
+acknowledge immediately without sockets, DNS, or delays. Selecting an absent
+slot raises FirmwareError and disconnects. Disconnect, reset, and presence
+queries forget commanded selection as in the real driver; configured slots
+persist across reconnects. Timeout and response-size settings are validated but
+have no timing or buffering effects. This is an API simulation, not a model of
+relay physics, cross-slot effects, network failures, or real firmware behavior.
 
 Construction validates `max_response_bytes` (default 2048, including the prompt)
 and does no I/O. Context entry
@@ -155,4 +184,6 @@ uv build
 Tests own their fake sockets and cover framing, one-byte fragmentation,
 non-ASCII rejection, welcome cleanup, disconnected errors, limits, EOF, timeouts,
 firmware errors, pixel mapping, validation, deselection, reset, and commanded
-state. These establish software behavior only, not hardware compatibility.
+state. Virtual-driver tests cover lifecycle, validation, selection, reset, and
+absence of network access. These establish software behavior only, not hardware
+compatibility.

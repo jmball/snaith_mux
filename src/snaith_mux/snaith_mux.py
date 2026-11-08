@@ -21,6 +21,35 @@ def _validate_timeout(value: float) -> None:
         raise ValueError("timeout must be positive and finite")
 
 
+def _validate_connection(resource_name: str, port: int, timeout: float) -> None:
+    if (
+        not isinstance(resource_name, str)
+        or not resource_name
+        or any(c.isspace() or ord(c) < 32 for c in resource_name)
+    ):
+        raise ValueError("resource_name must be a nonempty hostname or IP address")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("port must be an integer in 1..65535")
+    _validate_timeout(timeout)
+
+
+def _selection_for_command(command: str) -> tuple[str | None, int] | None:
+    if not isinstance(command, str) or not re.fullmatch(
+        r"[vc]|s(?:[A-Z][0-9]{1,5})?", command
+    ):
+        raise ValueError("Unsupported command or invalid command framing")
+    selection = None
+    if command.startswith("s"):
+        if command == "s":
+            selection = (None, 0)
+        else:
+            mask = int(command[2:])
+            if mask not in PIXEL_MASKS.values():
+                raise ValueError("Only established Snaith pixel masks are supported")
+            selection = (command[1], mask)
+    return selection
+
+
 class ProtocolError(RuntimeError):
     """The controller response is incomplete or violates the protocol."""
 
@@ -80,7 +109,7 @@ class SnaithMux:
         float
             Separate allowance for each send and complete-response read.
         """
-        self._require_socket()
+        self._require_connected()
         return self._timeout
 
     @timeout.setter
@@ -93,7 +122,7 @@ class SnaithMux:
             Positive finite timeout in seconds. Booleans are rejected.
             Requires a connection; invalid values preserve the current timeout.
         """
-        self._require_socket()
+        self._require_connected()
         _validate_timeout(value)
         self._timeout = value
 
@@ -171,15 +200,7 @@ class SnaithMux:
         """
         if self.connected:
             raise RuntimeError("Already connected; disconnect first")
-        if (
-            not isinstance(resource_name, str)
-            or not resource_name
-            or any(c.isspace() or ord(c) < 32 for c in resource_name)
-        ):
-            raise ValueError("resource_name must be a nonempty hostname or IP address")
-        if type(port) is not int or not 1 <= port <= 65535:
-            raise ValueError("port must be an integer in 1..65535")
-        _validate_timeout(timeout)
+        _validate_connection(resource_name, port, timeout)
         self._timeout = timeout
         self._socket = socket.create_connection((resource_name, port), self._timeout)
         try:
@@ -205,6 +226,10 @@ class SnaithMux:
             self.disconnect()
         except Exception:
             _LOGGER.warning("Failed to close after protocol failure", exc_info=True)
+
+    def _require_connected(self) -> None:
+        if not self.connected:
+            raise RuntimeError("Not connected")
 
     def _require_socket(self) -> socket.socket:
         if self._socket is None:
@@ -255,21 +280,7 @@ class SnaithMux:
             ASCII response without prompt or surrounding whitespace. Selection
             requires an empty response. Failures invalidate state and close TCP.
         """
-        if not isinstance(command, str) or not re.fullmatch(
-            r"[vc]|s(?:[A-Z][0-9]{1,5})?", command
-        ):
-            raise ValueError("Unsupported command or invalid command framing")
-        selection = None
-        if command.startswith("s"):
-            if command == "s":
-                selection = (None, 0)
-            else:
-                mask = int(command[2:])
-                if mask not in PIXEL_MASKS.values():
-                    raise ValueError(
-                        "Only established Snaith pixel masks are supported"
-                    )
-                selection = (command[1], mask)
+        selection = _selection_for_command(command)
         sock = self._require_socket()
         if command == "c":
             self._commanded_selection = None

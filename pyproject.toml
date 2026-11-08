@@ -20,6 +20,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 snaith_mux = ["py.typed"]
+virtual_snaith_mux = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
