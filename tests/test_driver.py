@@ -29,8 +29,7 @@ class FakeSocket:
         self.sent.append(data)
         if self.fail_send:
             raise OSError("send failed")
-        if not data.startswith(b"\xff"):
-            self.incoming.extend(self.response)
+        self.incoming.extend(self.response)
 
     def settimeout(self, timeout: float) -> None:
         assert timeout > 0
@@ -212,12 +211,15 @@ def test_queries_exact_suffix_and_presence():
     assert not driver.connected
 
 
-def test_telnet_fragmentation():
+def test_non_ascii_welcome_is_rejected_without_reply():
     fake = FakeSocket()
-    fake.incoming = deque(b"\xff\xfb\x01\xff\xfd\x03\xff\xfa\x18abc\xff\xf0Welcome>>> ")
-    driver = connect(fake)
-    assert driver.welcome_message == "Welcome"
-    assert fake.sent == [b"\xff\xfe\x01", b"\xff\xfc\x03"]
+    fake.incoming = deque(b"\xff\xfb\x01Welcome>>> ")
+    driver = SnaithMux()
+    with patch("socket.create_connection", return_value=fake):
+        with pytest.raises(ProtocolError, match="Non-ASCII"):
+            driver.connect("fake")
+    assert fake.sent == []
+    assert fake.closed and not driver.connected
 
 
 def test_explicit_reset():

@@ -87,13 +87,19 @@ Read-only local references inspected during implementation:
   and properties for queries. EQE session and Multiplexor role were inspected;
   this driver provides neither their orchestration nor completion guarantees.
 
-The Python reference wraps Telnet; LabVIEW uses TCP primitives. This supports
-TCP transport but does not establish that every firmware version omits Telnet
-negotiation. A narrowly scoped decoder refuses WILL with DONT and DO with WONT,
-ignores WONT/DONT and other Telnet controls, discards subnegotiation, and handles
-escaped IAC. It does not offer terminal options or authentication. Negotiation
-is covered by the same deadline and size bound. Firmware requiring accepted
-options remains unverified; no claim of full Telnet terminal support is made.
+The driver assumes plain ASCII TCP and does not interpret or reply to Telnet
+control messages. This matches the user's recollection of Arduino firmware
+using the Ethernet library, which provides TCP without automatic Telnet
+negotiation. Firmware source and a hardware traffic capture were unavailable,
+so this remains an explicit transport assumption.
+
+The Python reference uses telnetlib, but its bundled implementation initiates
+no negotiation: it only sends refusal replies if the peer sends option commands.
+Its use therefore does not establish that the controller requires Telnet.
+LabVIEW's inspected resources contain TCP primitives, but their strings alone
+do not rule out additional protocol handling in the VI dataflow. If a controller
+sends Telnet control bytes, this driver will reject a completed non-ASCII
+response, or raise EOF/timeout if no full prompt arrives, and close TCP.
 
 Reference Snaith numbering (not confirmed against physical PCB labels):
 
@@ -136,6 +142,6 @@ uv build
 ```
 
 Tests own their fake sockets and cover framing, one-byte fragmentation,
-negotiation, welcome cleanup, disconnected errors, limits, EOF, timeouts,
+non-ASCII rejection, welcome cleanup, disconnected errors, limits, EOF, timeouts,
 firmware errors, pixel mapping, validation, deselection, reset, and commanded
 state. These establish software behavior only, not hardware compatibility.

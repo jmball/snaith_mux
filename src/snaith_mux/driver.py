@@ -12,14 +12,6 @@ COMMAND_TERMINATOR = b"\r\n"
 PROMPT = b">>> "
 DEFAULT_PORT = 23
 
-# Telnet command bytes (RFC 854).
-_IAC = 255
-_WILL = 251
-_WONT = 252
-_DO = 253
-_DONT = 254
-_SB = 250
-_SE = 240
 PIXEL_MASKS = MappingProxyType({0: 0, **{p: (1 << (p + 7)) | 3 for p in range(1, 9)}})
 
 
@@ -39,7 +31,7 @@ class SnaithMux:
     timeout : float, optional
         Positive finite connection and per-transaction deadline in seconds.
     max_response_bytes : int, optional
-        Maximum wire bytes per response, including Telnet traffic and prompt.
+        Maximum wire bytes per response, including the prompt.
     """
 
     def __init__(self, *, timeout: float = 5.0, max_response_bytes: int = 65536):
@@ -162,9 +154,6 @@ class SnaithMux:
     def _read_response(self, deadline: float) -> str:
         sock = self._require_socket()
         data = bytearray()
-        wire_count = 0
-        state = "data"
-        option_command = 0
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -178,39 +167,9 @@ class SnaithMux:
                 ) from error
             if not chunk:
                 raise ProtocolError("EOF before complete >>> prompt")
-            wire_count += 1
-            if wire_count > self._limit:
+            data.extend(chunk)
+            if len(data) > self._limit:
                 raise ProtocolError("Response exceeds max_response_bytes")
-            byte = chunk[0]
-            # Minimal Telnet: refuse all options, discard bounded subnegotiation.
-            if state == "option":
-                if option_command in (_WILL, _DO):  # WILL -> DONT; DO -> WONT
-                    sock.sendall(
-                        bytes((_IAC, _DONT if option_command == _WILL else _WONT, byte))
-                    )
-                state = "data"
-                continue
-            if state == "sub":
-                if byte == _IAC:
-                    state = "sub_iac"
-                continue
-            if state == "sub_iac":
-                state = "data" if byte == _SE else "sub"
-                continue
-            if state == "iac":
-                if byte in (_WILL, _WONT, _DO, _DONT):
-                    option_command, state = byte, "option"
-                    continue
-                if byte == _SB:
-                    state = "sub"
-                    continue
-                state = "data"
-                if byte != _IAC:
-                    continue
-            elif byte == _IAC:
-                state = "iac"
-                continue
-            data.append(byte)
             if data.endswith(PROMPT):
                 try:
                     response = data[: -len(PROMPT)].decode("ascii").strip()
