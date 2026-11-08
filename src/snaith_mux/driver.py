@@ -8,7 +8,18 @@ import time
 from types import MappingProxyType, TracebackType
 
 _LOGGER = logging.getLogger(__name__)
+COMMAND_TERMINATOR = b"\r\n"
 PROMPT = b">>> "
+DEFAULT_PORT = 23
+
+# Telnet command bytes (RFC 854).
+_IAC = 255
+_WILL = 251
+_WONT = 252
+_DO = 253
+_DONT = 254
+_SB = 250
+_SE = 240
 PIXEL_MASKS = MappingProxyType({0: 0, **{p: (1 << (p + 7)) | 3 for p in range(1, 9)}})
 
 
@@ -35,7 +46,7 @@ class SnaithMux:
         if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
         if type(max_response_bytes) is not int or max_response_bytes < len(PROMPT):
-            raise ValueError("max_response_bytes must be an integer >= 4")
+            raise ValueError(f"max_response_bytes must be an integer >= {len(PROMPT)}")
         self._timeout = timeout
         self._limit = max_response_bytes
         self._socket: socket.socket | None = None
@@ -98,7 +109,7 @@ class SnaithMux:
                 raise
             _LOGGER.warning("Connection cleanup failed", exc_info=True)
 
-    def connect(self, resource_name: str, *, port: int = 23) -> None:
+    def connect(self, resource_name: str, *, port: int = DEFAULT_PORT) -> None:
         """Open TCP and require a complete welcome prompt; never reset.
 
         Parameters
@@ -173,30 +184,30 @@ class SnaithMux:
             byte = chunk[0]
             # Minimal Telnet: refuse all options, discard bounded subnegotiation.
             if state == "option":
-                if option_command in (251, 253):  # WILL -> DONT; DO -> WONT
+                if option_command in (_WILL, _DO):  # WILL -> DONT; DO -> WONT
                     sock.sendall(
-                        bytes((255, 254 if option_command == 251 else 252, byte))
+                        bytes((_IAC, _DONT if option_command == _WILL else _WONT, byte))
                     )
                 state = "data"
                 continue
             if state == "sub":
-                if byte == 255:
+                if byte == _IAC:
                     state = "sub_iac"
                 continue
             if state == "sub_iac":
-                state = "data" if byte == 240 else "sub"
+                state = "data" if byte == _SE else "sub"
                 continue
             if state == "iac":
-                if byte in (251, 252, 253, 254):
+                if byte in (_WILL, _WONT, _DO, _DONT):
                     option_command, state = byte, "option"
                     continue
-                if byte == 250:
+                if byte == _SB:
                     state = "sub"
                     continue
                 state = "data"
-                if byte != 255:
+                if byte != _IAC:
                     continue
-            elif byte == 255:
+            elif byte == _IAC:
                 state = "iac"
                 continue
             data.append(byte)
@@ -245,7 +256,7 @@ class SnaithMux:
         try:
             deadline = time.monotonic() + self._timeout
             sock.settimeout(self._timeout)
-            sock.sendall(command.encode("ascii") + b"\r\n")
+            sock.sendall(command.encode("ascii") + COMMAND_TERMINATOR)
             response = self._read_response(deadline)
             if selection is not None:
                 if response:
@@ -270,7 +281,6 @@ class SnaithMux:
         This may probe/reinitialize mux hardware in firmware; it is not relay
         readback. Commanded selection is therefore forgotten before querying.
         """
-        self._selection = None
         response = self.query("c")
         if not re.fullmatch(r"[0-9]+", response) or int(response) >= 1 << 26:
             self._close_after_failure()
@@ -318,6 +328,6 @@ class SnaithMux:
         sock = self._require_socket()
         try:
             sock.settimeout(self._timeout)
-            sock.sendall(b"reset\r\n")
+            sock.sendall(b"reset" + COMMAND_TERMINATOR)
         finally:
             self.disconnect()
