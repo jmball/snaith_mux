@@ -27,7 +27,8 @@ It starts a local TCP peer and selects, deselects, and disconnects. It does not
 simulate physical relays. If the VM blocks loopback TCP, the fake-socket tests
 still require no network. Never substitute a real controller in the tests.
 
-Construction validates the response-size limit and does no I/O. Context entry
+Construction validates `max_response_bytes` (default 2048, including the prompt)
+and does no I/O. Context entry
 returns the disconnected instance; connect explicitly. A second connect is an
 error. `connected` means a local session exists, not that the peer is alive.
 All hardware operations require a connection. A failed welcome closes the

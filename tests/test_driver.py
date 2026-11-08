@@ -155,7 +155,7 @@ def test_timeout_and_send_failure():
         assert fake.sent == [b"s\r\n"]
 
 
-def test_limit():
+def test_configured_response_size_limit():
     fake = FakeSocket()
     fake.incoming = deque(b"x" * 20)
     with patch("socket.create_connection", return_value=fake):
@@ -406,3 +406,16 @@ def test_timeout_property_applies_to_subsequent_send_receive_and_reset():
         setting.reset_mock()
         driver.reset()
         setting.assert_called_once_with(2.5)
+
+
+@pytest.mark.parametrize("response_size", [2048, 2049])
+def test_default_response_size_boundary(response_size):
+    fake = FakeSocket(b"x" * (response_size - 4) + b">>> ")
+    driver = connect(fake)
+    if response_size == 2048:
+        assert driver.firmware_version == "x" * 2044
+        assert driver.connected
+    else:
+        with pytest.raises(ProtocolError, match="max_response_bytes"):
+            _ = driver.firmware_version
+        assert fake.closed and not driver.connected

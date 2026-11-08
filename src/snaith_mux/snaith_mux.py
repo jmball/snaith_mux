@@ -54,17 +54,17 @@ class SnaithMux:
     ----------
     max_response_bytes : int, optional
         Maximum bytes in each controller response, including the prompt.
-        Must be at least the prompt length; defaults to 65536.
+        Must be at least the prompt length; defaults to 2048.
     """
 
-    def __init__(self, *, max_response_bytes: int = 65536):
+    def __init__(self, *, max_response_bytes: int = 2048):
         if type(max_response_bytes) is not int or max_response_bytes < len(PROMPT):
             raise ValueError(f"max_response_bytes must be an integer >= {len(PROMPT)}")
         self._timeout = DEFAULT_TIMEOUT
-        self._limit = max_response_bytes
+        self._max_response_bytes = max_response_bytes
         self._socket: socket.socket | None = None
-        self._welcome: str | None = None
-        self._selection: tuple[str | None, int] | None = None
+        self._welcome_message: str | None = None
+        self._commanded_selection: tuple[str | None, int] | None = None
 
     @property
     def connected(self) -> bool:
@@ -100,7 +100,7 @@ class SnaithMux:
     @property
     def welcome_message(self) -> str | None:
         """Welcome text for the active session, or None while disconnected."""
-        return self._welcome
+        return self._welcome_message
 
     @property
     def commanded_selection(self) -> tuple[str | None, int] | None:
@@ -112,7 +112,7 @@ class SnaithMux:
             Slot and mask; (None, 0) means all-off was acknowledged. None means
             unknown. No claim is made about other slots or physical completion.
         """
-        return self._selection
+        return self._commanded_selection
 
     def __enter__(self) -> "SnaithMux":
         """Return this instance without connecting.
@@ -183,7 +183,7 @@ class SnaithMux:
         self._timeout = timeout
         self._socket = socket.create_connection((resource_name, port), self._timeout)
         try:
-            self._welcome = self._read_response()
+            self._welcome_message = self._read_response()
         except BaseException:
             self._close_after_failure()
             raise
@@ -195,8 +195,8 @@ class SnaithMux:
         call deselect_all() first when required. Forget commanded state.
         """
         sock, self._socket = self._socket, None
-        self._selection = None
-        self._welcome = None
+        self._commanded_selection = None
+        self._welcome_message = None
         if sock is not None:
             sock.close()
 
@@ -213,13 +213,13 @@ class SnaithMux:
 
     def _read_response(self) -> str:
         sock = self._require_socket()
-        deadline = time.monotonic() + self._timeout
-        data = bytearray()
+        response_deadline = time.monotonic() + self._timeout
+        response_bytes = bytearray()
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            remaining_timeout = response_deadline - time.monotonic()
+            if remaining_timeout <= 0:
                 raise TimeoutError("Timed out waiting for complete >>> prompt")
-            sock.settimeout(remaining)
+            sock.settimeout(remaining_timeout)
             try:
                 chunk = sock.recv(1)
             except TimeoutError as error:
@@ -228,12 +228,12 @@ class SnaithMux:
                 ) from error
             if not chunk:
                 raise ProtocolError("EOF before complete >>> prompt")
-            data.extend(chunk)
-            if len(data) > self._limit:
+            response_bytes.extend(chunk)
+            if len(response_bytes) > self._max_response_bytes:
                 raise ProtocolError("Response exceeds max_response_bytes")
-            if data.endswith(PROMPT):
+            if response_bytes.endswith(PROMPT):
                 try:
-                    response = data[: -len(PROMPT)].decode("ascii").strip()
+                    response = response_bytes[: -len(PROMPT)].decode("ascii").strip()
                 except UnicodeDecodeError as error:
                     raise ProtocolError("Non-ASCII controller response") from error
                 if re.search(r"\bERROR\b", response, re.IGNORECASE):
@@ -272,7 +272,7 @@ class SnaithMux:
                 selection = (command[1], mask)
         sock = self._require_socket()
         if command == "c":
-            self._selection = None
+            self._commanded_selection = None
         try:
             sock.settimeout(self._timeout)
             sock.sendall(command.encode("ascii") + COMMAND_TERMINATOR)
@@ -282,7 +282,7 @@ class SnaithMux:
                     raise FirmwareError(
                         f"Expected empty selection acknowledgement: {response!r}"
                     )
-                self._selection = selection
+                self._commanded_selection = selection
             return response
         except BaseException:
             self._close_after_failure()
@@ -304,8 +304,8 @@ class SnaithMux:
         if not re.fullmatch(r"[0-9]+", response) or int(response) >= 1 << 26:
             self._close_after_failure()
             raise ProtocolError(f"Invalid mux presence bitfield: {response!r}")
-        mask = int(response)
-        return tuple(chr(65 + bit) for bit in range(26) if mask & (1 << bit))
+        presence_mask = int(response)
+        return tuple(chr(65 + bit) for bit in range(26) if presence_mask & (1 << bit))
 
     def select_pixel(self, slot: str, pixel: int) -> None:
         """Command a Snaith pixel; zero deselects the addressed slot.
