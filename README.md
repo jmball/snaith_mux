@@ -10,9 +10,9 @@ Install with `pip install .`. For development use `uv sync --group dev`.
 from snaith_mux import PIXEL_MASKS, SnaithMux
 
 print(dict(PIXEL_MASKS))  # available without connecting
-with SnaithMux(timeout=5) as mux:
+with SnaithMux() as mux:
     # Hardware example: opt in by replacing this host with your controller.
-    mux.connect("YOUR-CONTROLLER-HOST", port=23)
+    mux.connect("YOUR-CONTROLLER-HOST", port=23, timeout=5)
     print(mux.welcome_message)
     print(mux.firmware_version)
     mux.select_pixel("A", 2)
@@ -27,7 +27,7 @@ It starts a local TCP peer and selects, deselects, and disconnects. It does not
 simulate physical relays. If the VM blocks loopback TCP, the fake-socket tests
 still require no network. Never substitute a real controller in the tests.
 
-Construction validates timeout/response limits and does no I/O. Context entry
+Construction validates the response-size limit and does no I/O. Context entry
 returns the disconnected instance; connect explicitly. A second connect is an
 error. `connected` means a local session exists, not that the peer is alive.
 All hardware operations require a connection. A failed welcome closes the
@@ -44,8 +44,14 @@ separate actions.
 
 The transport sends ASCII commands with exactly one CRLF and waits for all four
 bytes of `>>> `. It removes that exact suffix, handles fragmented input, and
-bounds wire bytes and transaction time. EOF, timeout, non-ASCII responses,
-oversize responses, and firmware ERROR responses raise exceptions. Any command
+bounds response bytes and time. Configure the communications timeout in seconds
+with `connect(..., timeout=5.0)`. Sending each command gets the full timeout;
+receiving the complete response then gets a fresh, separate timeout of the same
+length. Each socket read uses the remaining response budget, so fragmented or
+slowly trickling responses cannot extend it. Connection establishment and the
+complete welcome response also receive separate allowances. Reconnecting uses
+the timeout passed to that connect call (or the default 5 seconds). EOF, timeout,
+non-ASCII responses, oversize responses, and firmware ERROR responses raise exceptions. Any command
 I/O/response failure closes the session and forgets commanded state. No retry
 occurs: an acknowledgement can be lost after a command took effect. Value errors
 before transmission preserve the session and prior state. FirmwareError and

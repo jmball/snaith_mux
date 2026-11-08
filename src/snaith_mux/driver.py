@@ -11,6 +11,7 @@ _LOGGER = logging.getLogger(__name__)
 COMMAND_TERMINATOR = b"\r\n"
 PROMPT = b">>> "
 DEFAULT_PORT = 23
+DEFAULT_TIMEOUT = 5.0
 
 PIXEL_MASKS = MappingProxyType({0: 0, **{p: (1 << (p + 7)) | 3 for p in range(1, 9)}})
 
@@ -28,18 +29,14 @@ class SnaithMux:
 
     Parameters
     ----------
-    timeout : float, optional
-        Positive finite connection and per-transaction deadline in seconds.
     max_response_bytes : int, optional
         Maximum wire bytes per response, including the prompt.
     """
 
-    def __init__(self, *, timeout: float = 5.0, max_response_bytes: int = 65536):
-        if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError("timeout must be positive and finite")
+    def __init__(self, *, max_response_bytes: int = 65536):
         if type(max_response_bytes) is not int or max_response_bytes < len(PROMPT):
             raise ValueError(f"max_response_bytes must be an integer >= {len(PROMPT)}")
-        self._timeout = timeout
+        self._timeout = DEFAULT_TIMEOUT
         self._limit = max_response_bytes
         self._socket: socket.socket | None = None
         self._welcome: str | None = None
@@ -101,7 +98,13 @@ class SnaithMux:
                 raise
             _LOGGER.warning("Connection cleanup failed", exc_info=True)
 
-    def connect(self, resource_name: str, *, port: int = DEFAULT_PORT) -> None:
+    def connect(
+        self,
+        resource_name: str,
+        *,
+        port: int = DEFAULT_PORT,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
         """Open TCP and require a complete welcome prompt; never reset.
 
         Parameters
@@ -110,6 +113,11 @@ class SnaithMux:
             Hostname or IP address, without a port or VISA syntax.
         port : int, optional
             TCP port, default 23.
+        timeout : float, optional
+            Positive finite communications timeout in seconds, default 5.
+            Sending a command and receiving its complete response each get
+            this full allowance separately. Also used for socket connection
+            establishment and, separately, the complete welcome response.
         """
         if self.connected:
             raise RuntimeError("Already connected; disconnect first")
@@ -121,9 +129,12 @@ class SnaithMux:
             raise ValueError("resource_name must be a nonempty hostname or IP address")
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("port must be an integer in 1..65535")
+        if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
+        self._timeout = timeout
         self._socket = socket.create_connection((resource_name, port), self._timeout)
         try:
-            self._welcome = self._read_response(time.monotonic() + self._timeout)
+            self._welcome = self._read_response()
         except BaseException:
             self._close_after_failure()
             raise
@@ -151,8 +162,9 @@ class SnaithMux:
             raise RuntimeError("Not connected")
         return self._socket
 
-    def _read_response(self, deadline: float) -> str:
+    def _read_response(self) -> str:
         sock = self._require_socket()
+        deadline = time.monotonic() + self._timeout
         data = bytearray()
         while True:
             remaining = deadline - time.monotonic()
@@ -213,10 +225,9 @@ class SnaithMux:
         if command == "c":
             self._selection = None
         try:
-            deadline = time.monotonic() + self._timeout
             sock.settimeout(self._timeout)
             sock.sendall(command.encode("ascii") + COMMAND_TERMINATOR)
-            response = self._read_response(deadline)
+            response = self._read_response()
             if selection is not None:
                 if response:
                     raise FirmwareError(

@@ -231,18 +231,17 @@ def test_explicit_reset():
     assert driver.commanded_selection is None
 
 
-@pytest.mark.parametrize(
-    "options",
-    [
-        {"timeout": 0},
-        {"timeout": float("inf")},
-        {"timeout": True},
-        {"max_response_bytes": 3},
-    ],
-)
-def test_constructor_validation(options):
+def test_constructor_validation():
     with pytest.raises(ValueError):
-        SnaithMux(**options)
+        SnaithMux(max_response_bytes=3)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True])
+def test_timeout_validation_before_open(timeout):
+    with patch("socket.create_connection") as opening:
+        with pytest.raises(ValueError, match="timeout"):
+            SnaithMux().connect("fake", timeout=timeout)
+        opening.assert_not_called()
 
 
 def test_context_exception_cleanup():
@@ -290,3 +289,75 @@ def test_welcome_timeout_cleanup():
         with pytest.raises(TimeoutError):
             driver.connect("fake")
     assert fake.closed and not driver.connected and fake.sent == []
+
+
+def test_send_and_receive_have_separate_timeout_budgets():
+    fake = FakeSocket()
+    driver = SnaithMux()
+    with patch("socket.create_connection", return_value=fake) as opening:
+        driver.connect("fake", timeout=1.0)
+        opening.assert_called_once_with(("fake", 23), 1.0)
+    now = [0.0]
+    original_send = fake.sendall
+    original_recv = fake.recv
+
+    def slow_send(data: bytes) -> None:
+        now[0] += 0.9
+        original_send(data)
+
+    def fragmented_recv(size: int) -> bytes:
+        now[0] += 0.2
+        return original_recv(size)
+
+    with (
+        patch("snaith_mux.driver.time.monotonic", side_effect=lambda: now[0]),
+        patch.object(fake, "sendall", side_effect=slow_send),
+        patch.object(fake, "recv", side_effect=fragmented_recv),
+        patch.object(fake, "settimeout") as setting,
+    ):
+        driver.deselect_all()
+    assert now[0] == pytest.approx(1.7)
+    assert [call.args[0] for call in setting.call_args_list] == pytest.approx(
+        [1.0, 1.0, 0.8, 0.6, 0.4]
+    )
+    assert driver.commanded_selection == (None, 0)
+    assert driver.connected
+
+
+def test_response_timeout_is_not_restarted_for_each_byte():
+    fake = FakeSocket()
+    driver = SnaithMux()
+    with patch("socket.create_connection", return_value=fake):
+        driver.connect("fake", timeout=1.0)
+    now = [0.0]
+    original_recv = fake.recv
+
+    def slow_recv(size: int) -> bytes:
+        now[0] += 0.6
+        return original_recv(size)
+
+    with (
+        patch("snaith_mux.driver.time.monotonic", side_effect=lambda: now[0]),
+        patch.object(fake, "recv", side_effect=slow_recv),
+        patch.object(fake, "settimeout") as setting,
+    ):
+        with pytest.raises(TimeoutError, match="complete"):
+            driver.deselect_all()
+    assert [call.args[0] for call in setting.call_args_list] == pytest.approx(
+        [1.0, 1.0, 0.4]
+    )
+    assert fake.closed and not driver.connected
+    assert driver.commanded_selection is None
+
+
+def test_reconnect_uses_new_timeout_and_reset_uses_comms_timeout():
+    driver = SnaithMux()
+    for timeout in (0.5, 2.0):
+        fake = FakeSocket()
+        with patch("socket.create_connection", return_value=fake) as opening:
+            driver.connect("fake", timeout=timeout)
+            opening.assert_called_once_with(("fake", 23), timeout)
+        with patch.object(fake, "settimeout") as setting:
+            driver.reset()
+            setting.assert_called_once_with(timeout)
+        assert fake.closed
