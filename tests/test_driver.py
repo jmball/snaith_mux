@@ -310,7 +310,7 @@ def test_send_and_receive_have_separate_timeout_budgets():
         return original_recv(size)
 
     with (
-        patch("snaith_mux.driver.time.monotonic", side_effect=lambda: now[0]),
+        patch("snaith_mux.snaith_mux.time.monotonic", side_effect=lambda: now[0]),
         patch.object(fake, "sendall", side_effect=slow_send),
         patch.object(fake, "recv", side_effect=fragmented_recv),
         patch.object(fake, "settimeout") as setting,
@@ -337,7 +337,7 @@ def test_response_timeout_is_not_restarted_for_each_byte():
         return original_recv(size)
 
     with (
-        patch("snaith_mux.driver.time.monotonic", side_effect=lambda: now[0]),
+        patch("snaith_mux.snaith_mux.time.monotonic", side_effect=lambda: now[0]),
         patch.object(fake, "recv", side_effect=slow_recv),
         patch.object(fake, "settimeout") as setting,
     ):
@@ -400,7 +400,7 @@ def test_timeout_property_applies_to_subsequent_send_receive_and_reset():
         assert driver.timeout == 2.5
         setting.assert_not_called()
         assert fake.sent == []
-        with patch("snaith_mux.driver.time.monotonic", return_value=10.0):
+        with patch("snaith_mux.snaith_mux.time.monotonic", return_value=10.0):
             driver.deselect_all()
         assert [call.args[0] for call in setting.call_args_list] == [2.5] * 5
         setting.reset_mock()

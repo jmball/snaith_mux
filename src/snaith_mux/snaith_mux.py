@@ -1,4 +1,4 @@
-"""Small synchronous controller protocol; instances are not thread safe."""
+"""Snaith PCB multiplexor selection and controller communication."""
 
 import logging
 import math
@@ -30,12 +30,31 @@ class FirmwareError(ProtocolError):
 
 
 class SnaithMux:
-    """Own a TCP connection without performing I/O during construction.
+    """Control Snaith PCB multiplexor pixel selection.
+
+    Select a reference Snaith pixel within a lettered mux slot, deselect one
+    slot or all muxes, and query controller firmware and mux presence. Pixel
+    numbering and relay masks follow the established Snaith mapping exposed
+    by PIXEL_MASKS; logical DUT names and experiment routing belong to the
+    consuming application.
+
+    Selection commands require an empty response and the complete controller
+    prompt. The commanded_selection property records only the last
+    acknowledged selection command. It does not provide relay readback,
+    describe other slots, or establish physical switching completion.
+
+    Construction and context entry perform no instrument I/O. Call connect()
+    explicitly to open the owned TCP connection. Context exit and disconnect()
+    close the connection without sending deselection or reset commands;
+    deselect_all() and reset() are separate, explicit actions. Communication
+    failures close the connection without retries or automatic resets.
+    Instances are synchronous and are not thread safe.
 
     Parameters
     ----------
     max_response_bytes : int, optional
-        Maximum wire bytes per response, including the prompt.
+        Maximum bytes in each controller response, including the prompt.
+        Must be at least the prompt length; defaults to 65536.
     """
 
     def __init__(self, *, max_response_bytes: int = 65536):
