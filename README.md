@@ -1,179 +1,147 @@
 # Snaith mux
 
-A small, synchronous Python 3.13+ driver for the Snaith PCB TCP multiplexor.
-Runtime dependencies: Python standard library only. No centralcontrol imports,
-experiment routing, or EQE adapter. Instances are not thread safe.
+Control a Snaith PCB multiplexor: select a pixel in a mux slot, deselect relays,
+and query the controller. Includes a virtual driver for use without hardware.
 
-Install with `pip install .`. For development use `uv sync --group dev`.
+## Installation
 
-```python
-from snaith_mux import PIXEL_MASKS, SnaithMux
+From the repository directory:
 
-print(dict(PIXEL_MASKS))  # available without connecting
-with SnaithMux() as mux:
-    # Hardware example: opt in by replacing this host with your controller.
-    mux.connect("YOUR-CONTROLLER-HOST", port=23, timeout=5)
-    print(mux.welcome_message)
-    print(mux.firmware_version)
-    mux.select_pixel("A", 2)
-    print(mux.commanded_selection)  # ('A', 515), not readback
-    mux.deselect_slot("A")
-    mux.deselect_all()
-# TCP connection closed
+```sh
+uv sync
 ```
 
-The example uses the actual instrument driver and changes real relay settings.
-Run it only when ready to connect to your controller:
+This installs both drivers into the project environment using `uv.lock`.
+No additional runtime dependencies are needed.
+
+## Connect and select a pixel
+
+This example operates real hardware. Replace the host with your controller's
+hostname or IP address. It explicitly resets the controller after deselection.
+
+```python
+from snaith_mux import SnaithMux
+
+with SnaithMux() as mux:
+    mux.connect("YOUR-CONTROLLER-HOST", port=23, timeout=5.0)
+    print(mux.firmware_version)
+
+    try:
+        mux.select_pixel("A", 2)
+        print(mux.commanded_selection)  # ('A', 515)
+        # Use the selected measurement path here.
+        mux.deselect_slot("A")
+    finally:
+        if mux.connected:
+            mux.deselect_all()
+    mux.reset()  # Explicit controller reset; also closes the connection.
+# The connection is closed on leaving the context.
+```
+
+Construction and context entry do not connect. Call `connect()` explicitly.
+The driver owns the connection; context exit calls `disconnect()`, which is
+also safe to call repeatedly. Disconnect before connecting again.
+
+**Closing the connection does not send deselection or reset commands.** Call
+`deselect_slot()` or `deselect_all()` explicitly when needed. If communication
+fails, the connection is closed and relay state is unknown; the driver cannot
+confirm deselection through that failed connection.
+
+A runnable example is also provided:
 
 ```sh
 uv run python examples/select_pixel.py YOUR-CONTROLLER-HOST --slot A --pixel 2
 ```
 
-It selects the requested pixel, deselects the slot and all muxes, then closes
-TCP. It attempts all-off on exit while the session remains connected. If a
-communication failure closes the session, relay state is unknown and cleanup
-cannot be confirmed. No live hardware is contacted by the automated tests;
-`--help` displays usage without connecting.
+It selects the pixel, deselects the slot and all muxes, then explicitly resets
+the controller and disconnects. Reset is performed only after those operations
+succeed. Use `--help` to see its connection options without contacting hardware.
 
-For hardware-free application development, use the virtual driver instead:
+## Selection and controller information
+
+| Operation | Behavior |
+| --- | --- |
+| `select_pixel(slot, pixel)` | Select pixel 1–8 in the addressed slot; pixel 0 deselects that slot. |
+| `deselect_slot(slot)` | Send a zero relay mask to the addressed slot. |
+| `deselect_all()` | Command all muxes off. |
+| `commanded_selection` | Last acknowledged selection as `(slot, relay_mask)`, `(None, 0)` for all-off, or `None` for unknown. |
+| `firmware_version` | Query the firmware version text. |
+| `detected_muxes` | Query installed slots, returned as a tuple of letters. May reinitialize mux electronics and clears commanded selection. |
+| `welcome_message` | Welcome text from the active connection, or `None` while disconnected. |
+| `connected` | Whether a local session is open; does not probe controller liveness. |
+| `reset()` | Send an explicit controller reset and disconnect. Reconnect explicitly afterward. |
+
+Slots must be single uppercase letters A–Z; the installed range depends on the
+controller. Logical device names and routing belong in your application.
+Pixel mappings are available without connecting:
+
+```python
+from snaith_mux import PIXEL_MASKS
+
+print(PIXEL_MASKS[2])  # 515
+```
+
+`commanded_selection` records a command acknowledgement, not physical relay
+readback or confirmation that switching has settled. It does not describe
+other slots. It is cleared by disconnect, reset, presence queries, and
+communication failures. Cross-slot effects, physical pixel labels, and settling
+times need verification for your hardware.
+
+Reset is never automatic. Successful return from `reset()` means the reset
+command was sent, not that reset has completed or the relays are off.
+
+## Timeouts and errors
+
+`connect(host, port=23, timeout=5.0)` configures the communications timeout in
+seconds. While connected, use `mux.timeout` to read or change it. Values must be
+positive and finite; booleans are rejected. Each send gets the full timeout,
+then the complete response gets a separate allowance of the same length.
+Receiving individual bytes does not restart the response timeout.
+
+`SnaithMux(max_response_bytes=2048)` sets the response-size limit, including the
+prompt. The minimum is four bytes.
+
+Hardware operations require a connection. Invalid arguments raise `ValueError`
+before transmission. Controller errors raise `FirmwareError`; incomplete or
+invalid responses raise `ProtocolError`. Both are available from `snaith_mux`
+and derive from `RuntimeError`. Socket errors and `TimeoutError` propagate.
+Command communication failures close the connection and clear commanded state.
+Commands are never retried automatically because a command may have taken
+effect even when its acknowledgement was lost.
+
+The driver uses plain ASCII TCP, CRLF command termination, and the complete
+`>>> ` response prompt. Telnet negotiation is not supported. Selection commands
+require an empty response before the prompt. For low-level access,
+`query(command)` accepts `v`, `c`, `s`, and slot-selection commands using the
+supported pixel masks; arbitrary relay masks are not supported. Instances are
+synchronous and are not thread safe.
+
+## Virtual driver
+
+Use the same API without contacting hardware:
 
 ```python
 from virtual_snaith_mux import SnaithMux
 
 with SnaithMux(slots=("A", "B")) as mux:
-    mux.connect("virtual", timeout=5)
+    mux.connect("virtual", timeout=5.0)
     mux.select_pixel("B", 2)
     print(mux.commanded_selection)  # ('B', 515)
     mux.deselect_all()
 ```
 
-The virtual package follows the real driver's public API and validation. It
-reports virtual firmware text and the configured slots (default A). Operations
-acknowledge immediately without sockets, DNS, or delays. Selecting an absent
-slot raises FirmwareError and disconnects. Disconnect, reset, and presence
-queries forget commanded selection as in the real driver; configured slots
-persist across reconnects. Timeout and response-size settings are validated but
-have no timing or buffering effects. This is an API simulation, not a model of
-relay physics, cross-slot effects, network failures, or real firmware behavior.
+The virtual driver reports configured slots (default A) and virtual firmware
+text. Operations complete immediately. Selecting an absent slot raises
+`FirmwareError` and disconnects. Installed slots persist across reconnects;
+commanded selection follows the real driver's lifecycle. Timeout and
+response-size settings are validated but do not simulate delays or buffering.
+The virtual driver does not model electrical behavior or establish hardware
+compatibility.
 
-Construction validates `max_response_bytes` (default 2048, including the prompt)
-and does no I/O. Context entry
-returns the disconnected instance; connect explicitly. A second connect is an
-error. `connected` means a local session exists, not that the peer is alive.
-All hardware operations require a connection. A failed welcome closes the
-partially opened connection. `disconnect()` is idempotent and closes TCP only:
-it sends no `exit`, deselection, or reset. Firmware may react to socket closure;
-this driver cannot promise the relays remain unchanged. Explicitly deselect
-before disconnecting if required. Context exit closes even after an exception.
-
-`reset()` explicitly sends `reset\r\n` and closes TCP. It does not wait for a
-prompt because reset may terminate the connection. Return means send completed,
-not reset completed. Reconnect explicitly; relay state is unknown. No operation
-resets automatically. Reset, relay deselection, and connection closure are
-separate actions.
-
-The transport sends ASCII commands with exactly one CRLF and waits for all four
-bytes of `>>> `. It removes that exact suffix, handles fragmented input, and
-bounds response bytes and time. Configure the communications timeout in seconds
-with `connect(..., timeout=5.0)`. Sending each command gets the full timeout;
-receiving the complete response then gets a fresh, separate timeout of the same
-length. Each socket read uses the remaining response budget, so fragmented or
-slowly trickling responses cannot extend it. Connection establishment and the
-complete welcome response also receive separate allowances. Reconnecting uses
-the timeout passed to that connect call (or the default 5 seconds). While
-connected, read or assign `mux.timeout` to inspect or change the setting in
-seconds. Assignments must be positive and finite (booleans are rejected), send
-no commands, and apply to subsequent I/O. Getting or setting the property while
-disconnected raises RuntimeError. EOF, timeout,
-non-ASCII responses, oversize responses, and firmware ERROR responses raise exceptions. Any command
-I/O/response failure closes the session and forgets commanded state. No retry
-occurs: an acknowledgement can be lost after a command took effect. Value errors
-before transmission preserve the session and prior state. FirmwareError and
-ProtocolError derive from RuntimeError; socket errors and TimeoutError propagate.
-Normal library logging installs no handlers and changes no root settings.
-
-`query(command)` exposes validated `v`, `c`, `s`, and established pixel-mask
-selection commands. `firmware_version` queries `v`. `detected_muxes` queries `c`
-and decodes a decimal presence bitfield (bit zero -> A). Presence probing may
-reinitialize mux electronics according to a comment in mc.py; it forgets
-commanded selection and must not be treated as a passive relay-state query.
-Calling `query("c")` has the same state invalidation policy.
-
-`commanded_selection` is only the last successfully acknowledged selection
-command: `(slot, mask)`, `(None, 0)` for all-off, or None for unknown. It is
-cleared on disconnect, reset, presence probing, or communication failure. It is
-not a model of simultaneous slot states, exclusive DUT selection, contact
-readback, or proof of physical switching completion. Other clients may change
-the controller. Logical DUT names and routing belong in the consumer.
-
-## Protocol evidence and limits
-
-Read-only local references inspected during implementation:
-
-- `../centralcontrol/src/centralcontrol/mc.py`: port 23, CRLF writes, welcome
-  prompt, `v`, `c`, empty response expected for `s` and selections, slot letters
-  decoded from presence bits, explicit `reset`, and Snaith pixel lookup.
-- `../centralcontrol/tests/test_pcb.py`: historical hardware test expectations
-  include `sA515`, `sA0`, all-off `s`, and 16-bit direct latch writes. These tests
-  were inspected, never imported or executed.
-- `../spectral_response/subVIs/pcb_open_tcp_connection.vi`,
-  `pcb_query_command_tcp.vi`, and `pcb_select_pixel_tcp.vi`: inspected binary
-  resources and zlib-decompressed resource text. TCP connection/read/write
-  controls, `>>> `, `ERROR:`, and selection failure labels corroborate transport
-  and error conventions. Embedded strings do not establish dataflow execution
-  order; no reset/select ordering is inferred from them.
-- Adjacent Acton SP2150, SRS SR830, Rigol DP800, Thorlabs MC2000B, and Keithley
-  2400 drivers: src layout, explicit connect, connected state, context lifecycle,
-  and properties for queries. EQE session and Multiplexor role were inspected;
-  this driver provides neither their orchestration nor completion guarantees.
-
-The driver assumes plain ASCII TCP and does not interpret or reply to Telnet
-control messages. This matches the user's recollection of Arduino firmware
-using the Ethernet library, which provides TCP without automatic Telnet
-negotiation. Firmware source and a hardware traffic capture were unavailable,
-so this remains an explicit transport assumption.
-
-The Python reference uses telnetlib, but its bundled implementation initiates
-no negotiation: it only sends refusal replies if the peer sends option commands.
-Its use therefore does not establish that the controller requires Telnet.
-LabVIEW's inspected resources contain TCP primitives, but their strings alone
-do not rule out additional protocol handling in the VI dataflow. If a controller
-sends Telnet control bytes, this driver will reject a completed non-ASCII
-response, or raise EOF/timeout if no full prompt arrives, and close TCP.
-
-Reference Snaith numbering (not confirmed against physical PCB labels):
-
-| Pixel | Decimal relay mask |
-| --- | --- |
-| 0 (off) | 0 |
-| 1 | 259 |
-| 2 | 515 |
-| 3 | 1027 |
-| 4 | 2051 |
-| 5 | 4099 |
-| 6 | 8195 |
-| 7 | 16387 |
-| 8 | 32771 |
-
-Nonzero selections send five decimal digits, e.g. `sA00515`; off sends `sA0`.
-A..Z is the syntactic slot range accepted by the driver, inferred from the
-reference's letter/bit convention, not a verified installed-slot count. The
-reference hardware tests use A..H. No automatic presence query or reset occurs
-on connect. The prompt and an empty body are the reference's acknowledgement
-convention; neither proves electrical completion. `ERROR` is recognized as a
-case-insensitive word anywhere in a response, consistent with LabVIEW's ERROR
-search. Unexpected nonempty selection responses fail conservatively.
-
-The firmware implementation and hardware timing documentation were not present
-in the inspected sources. Whether slot writes preserve other slots, whether
-writes are atomic, exact reset behavior, and physical settling time remain
-unresolved. Direct arbitrary relay-mask programming is intentionally omitted
-because its electrical semantics cannot be validated from these references.
-The known pixel commands remain usable without assuming cross-slot effects.
-
-## Validation
+## Development
 
 ```sh
+uv sync --group dev
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check
@@ -181,9 +149,4 @@ uv run pytest
 uv build
 ```
 
-Tests own their fake sockets and cover framing, one-byte fragmentation,
-non-ASCII rejection, welcome cleanup, disconnected errors, limits, EOF, timeouts,
-firmware errors, pixel mapping, validation, deselection, reset, and commanded
-state. Virtual-driver tests cover lifecycle, validation, selection, reset, and
-absence of network access. These establish software behavior only, not hardware
-compatibility.
+Automated tests run without live hardware.

@@ -1,4 +1,4 @@
-"""Select a pixel on real hardware; run with --help for connection options."""
+"""Select, deselect, and reset real hardware; run with --help for options."""
 
 import argparse
 
@@ -6,7 +6,7 @@ from snaith_mux import SnaithMux
 
 
 def main() -> None:
-    """Connect to the requested controller, select a pixel, and deselect."""
+    """Connect, select a pixel, deselect, then explicitly reset the controller."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("host", help="Controller hostname or IP address")
     parser.add_argument("--port", type=int, default=23)
@@ -26,6 +26,7 @@ def main() -> None:
         finally:
             if mux.connected:
                 mux.deselect_all()
+        mux.reset()
 
 
 if __name__ == "__main__":
